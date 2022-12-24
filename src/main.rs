@@ -1,11 +1,12 @@
 use std::collections::HashSet;
+use std::process;
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use select::document::Document;
 use select::predicate::Name;
 
 fn main() {
-    let debug = true;
+    let debug = false;
     let base_url = "https://stevensbikeservice.nl";
 
     let client = Client::new();
@@ -59,15 +60,9 @@ fn main() {
                 && !checked_links.contains(href))
             .collect::<HashSet<String>>();
 
-        // concatenate new_pages and new_urls to check them as a batch
+        // concatenate new_pages and new_urls to check them in a batch
         let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
-        print!("new_urls ({}): ", new_urls.len());
-        if new_urls.len() > 0 {
-            for new_url in new_urls.clone() {
-                print!("{new_url}, ");
-            }
-            println!();
-        }
+
         for check_result in check_url(&client, new_urls, debug) {
             check_results.insert(check_result);
         }
@@ -111,6 +106,13 @@ fn main() {
         for bad_url in bad_urls {
             println!("{bad_url}");
         }
+    }
+
+    // exit <> 0 if bad_urls exists
+    if nr_bad_urls == 0 {
+        process::exit(0);
+    } else {
+        process::exit(-1);
     }
 
     // strip a trailing '/' and/or the base_url from the url
