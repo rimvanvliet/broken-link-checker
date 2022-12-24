@@ -5,13 +5,14 @@ use select::document::Document;
 use select::predicate::Name;
 
 fn main() {
+    let base_url = "http://vliet.io";
+
     let client = Client::new();
     let mut visited_urls = std::collections::HashSet::new();
     let mut checked_urls = std::collections::HashSet::new();
     let mut bad_urls = std::collections::HashSet::new();
 
     // Crawl the website and get all of the links
-    let base_url = "http://vliet.io";
     let links = crawl(&client, base_url);
 
     // Check each link to see if it is valid
@@ -77,7 +78,19 @@ fn main() {
         let response =
             client
                 .get(link)
-                .header("User-Agent", "Ruud's HTTP health check")
+                .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                .header("Accept-Language", "nl,en-US;q=0.7,en;q=0.3")
+                .header("Accept-Encoding", "gzip, deflate, br")
+                .header("DNT", "1")
+                .header("Connection", "keep-alive")
+                .header("Upgrade-Insecure-Requests", "1")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "none")
+                .header("Sec-Fetch-User", "?1")
+                .header("Pragma", "no-cache")
+                .header("Cache-Control", "no-cache")
                 .send();
         match response {
             Ok(res) => {
