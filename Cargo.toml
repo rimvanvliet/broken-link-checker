@@ -1,5 +1,5 @@
 [package]
-name = "rust-web-crawler"
+name = "hc"
 version = "0.1.0"
 edition = "2021"
 
