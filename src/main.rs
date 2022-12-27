@@ -4,10 +4,33 @@ use reqwest::blocking::Client;
 use reqwest::StatusCode;
 use select::document::Document;
 use select::predicate::Name;
+use clap::{arg, command};
+use regex::Regex;
+
+use std::io;
+use std::io::Write;
+
 
 fn main() {
-    let debug = false;
-    let base_url = "https://stevensbikeservice.nl";
+    let matches = command!() // requires `cargo` feature
+        .arg_required_else_help(true)
+        .arg(arg!([url] "Required url to operate on, including the protiocl (so http or https)."))
+        .arg(arg!(-d --debug "Turn debugging information on.")
+            .required(false))
+        .arg(arg!(-p --progress "Show a progress on-liner.")
+            .required(false))
+        .get_matches();
+
+    let base_url = matches.get_one::<String>("url").unwrap();
+    let regex = Regex::new(r"^https?://[a-z.]+$").unwrap();
+    if !(regex.is_match(base_url)) {
+        println!("{base_url} is not a valid url.");
+        process::exit(1);
+    }
+
+    let debug = matches.get_flag("debug");
+    let progress = matches.get_flag("progress");
+    if progress { println!(); }
 
     let client = Client::new();
 
@@ -45,7 +68,7 @@ fn main() {
             .collect::<HashSet<String>>();
 
         if debug {
-            print!("new pages ({}); ", new_pages.len());
+            println!("new pages ({}); ", new_pages.len());
             new_pages.clone().into_iter().for_each(|s| print!("{s}, "));
             println!();
         }
@@ -83,10 +106,15 @@ fn main() {
 
         // finally add the page_being_checked to the checked_pages
         checked_pages.insert(page_being_checked);
+
+        if progress {
+            print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", checked_pages.len(), to_be_checked_pages.len(), checked_links.len());
+            io::stdout().flush().unwrap();
+        }
     }
 
     // print the results
-    println!("--> de gevonden interne links zijn ({}): ", checked_pages.len());
+    println!("\n--> de gevonden interne links zijn ({}): ", checked_pages.len());
     for int_link in checked_pages {
         println!("{int_link}");
     }
