@@ -1,23 +1,28 @@
 use std::collections::HashSet;
-use std::process;
-use reqwest::blocking::Client;
-use reqwest::StatusCode;
-use select::document::Document;
-use select::predicate::Name;
-use clap::{arg, command};
-use regex::Regex;
-
 use std::io;
 use std::io::Write;
+use std::process;
+use std::time::Instant;
 
+use clap::{arg, command};
+use regex::Regex;
+use reqwest::{Client, Response, StatusCode};
+use select::document::Document;
+use select::predicate::Name;
 
-fn main() {
-    let matches = command!() // requires `cargo` feature
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
+    // prepare cli arg & flags
+    let matches = command!()
         .arg_required_else_help(true)
         .arg(arg!([url] "Required url to operate on, including the protiocl (so http or https)."))
         .arg(arg!(-d --debug "Turn debugging information on.")
             .required(false))
         .arg(arg!(-p --progress "Show a progress on-liner.")
+            .required(false))
+        .arg(arg!(-t --timer "Time execution.")
             .required(false))
         .get_matches();
 
@@ -30,7 +35,8 @@ fn main() {
 
     let debug = matches.get_flag("debug");
     let progress = matches.get_flag("progress");
-    if progress { println!(); }
+    let timer = matches.get_flag("timer");
+    // if progress { println!(); }
 
     let client = Client::new();
 
@@ -54,7 +60,7 @@ fn main() {
             println!();
         }
 
-        let hrefs = crawl(&client, &format!("{page_being_checked}"));
+        let hrefs = crawl(&client, &format!("{page_being_checked}")).await;
 
         // determine the pages we did not yet see
         let new_pages = hrefs
@@ -86,7 +92,7 @@ fn main() {
         // concatenate new_pages and new_urls to check them in a batch
         let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
 
-        for check_result in check_url(&client, new_urls, debug) {
+        for check_result in check_urls(&client, new_urls, debug).await {
             check_results.insert(check_result);
         }
 
@@ -130,10 +136,13 @@ fn main() {
         println!("--> er zijn GEEN gebroken urls.");
     } else {
         println!("--> LET OP: ER ZIJN GEBROKEN URLS ({}):", bad_urls.clone().len());
-        // println!("--> bad urls ({})", &bad_urls.cloned().collect::<Vec<_>>().len());
         for bad_url in bad_urls {
             println!("{bad_url}");
         }
+    }
+
+    if timer {
+        println!("Timer: {} seconden.", start.elapsed().as_secs());
     }
 
     // exit <> 0 if bad_urls exists
@@ -157,9 +166,9 @@ fn main() {
     }
 
     // fetch all href's from the page, so both pages & links
-    fn crawl(client: &Client, url: &str) -> HashSet<String> {
+    async fn crawl(client: &Client, url: &str) -> HashSet<String> {
         let mut links = HashSet::new();
-        let body = client.get(url).send().unwrap().text().unwrap();
+        let body = client.get(url).send().await.unwrap().text().await.unwrap();
         let document = Document::from(body.as_str());
         for node in document.find(Name("a")) {
             let link = node.attr("href").unwrap_or("");
@@ -168,48 +177,54 @@ fn main() {
         links
     }
 
-    // checks Vec<url> (pages or links) for HTTP status code between 200 and 399
+    // checks Vec<url> (pages or links) for HTTP status code between 200 and 299
     // returns None if ok, Some(link+error) if not ok
-    // TODO check async in parallel
-    fn check_url(client: &Client, urls: Vec<String>, debug: bool) -> HashSet<Option<String>> {
+    async fn check_urls(client: &Client, urls: Vec<String>, debug: bool) -> HashSet<Option<String>> {
         let mut result = HashSet::new();
 
-        for url in urls {
-            let response =
-                client
-                    .get(&url)
-                    .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0")
-                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-                    .header("Accept-Language", "nl,en-US;q=0.7,en;q=0.3")
-                    .header("Accept-Encoding", "gzip, deflate, br")
-                    .header("DNT", "1")
-                    .header("Connection", "keep-alive")
-                    .header("Upgrade-Insecure-Requests", "1")
-                    .header("Sec-Fetch-Dest", "document")
-                    .header("Sec-Fetch-Mode", "navigate")
-                    .header("Sec-Fetch-Site", "none")
-                    .header("Sec-Fetch-User", "?1")
-                    .header("Pragma", "no-cache")
-                    .header("Cache-Control", "no-cache")
-                    .send();
+        let tasks = urls.into_iter().map(move |url| {
+            check_url(&client, url)
+        });
+        let responses: Vec<Result<Response, Box<dyn std::error::Error>>> = futures::future::join_all(tasks).await;
+
+        for response in responses {
             match response {
                 Ok(res) => {
                     if res.status() >= StatusCode::from_u16(200).unwrap()
-                        && res.status() < StatusCode::from_u16(400).unwrap() {
-                        if debug { println!("{}: success {:?}", url, res.status()); }
+                        && res.status() < StatusCode::from_u16(300).unwrap() {
+                        if debug { println!("{}: success {:?}", res.url(), res.status()); }
                         result.insert(None);
                     } else {
-                        println!("!!!!! ERROR {}: {:?}", url, res.status());
-                        result.insert(Some(format!("{url} gave status {:?}", res.status())));
+                        if debug { println!("!!!!! ERROR {}: {:?}", res.url(), res.status()); }
+                        result.insert(Some(format!("{} gave status {:?}", res.url(), res.status())));
                     }
                 }
                 Err(err) => {
-                    println!("!!!!! ERROR: {}: {}", url, err);
-                    result.insert(Some(format!("{url} gave error {:?}", err)));
+                    if debug { println!("!!!!! ERROR {:?}", err); }
+                    result.insert(Some(format!("error {:?}", err)));
                 }
             }
         }
         result
+    }
+    async fn check_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {
+        Ok(client
+            .get(url)
+            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .header("Accept-Language", "nl,en-US;q=0.7,en;q=0.3")
+            .header("Accept-Encoding", "gzip, deflate, br")
+            .header("DNT", "1")
+            .header("Connection", "keep-alive")
+            .header("Upgrade-Insecure-Requests", "1")
+            .header("Sec-Fetch-Dest", "document")
+            .header("Sec-Fetch-Mode", "navigate")
+            .header("Sec-Fetch-Site", "none")
+            .header("Sec-Fetch-User", "?1")
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
+            .send()
+            .await?)
     }
 }
 
