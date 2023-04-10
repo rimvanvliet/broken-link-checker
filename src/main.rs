@@ -31,14 +31,14 @@ async fn main() {
     let start = Instant::now();
 
     // prepare cli arg & flags
-    let matches = get_matches();
-    let base_url = matches.get_one::<String>("url").unwrap();
+    let arg_matches = get_arch_matches();
+    let base_url = arg_matches.get_one::<String>("url").unwrap();
     check_base_url(base_url);
 
     let flags = Flags {
-        debug: matches.get_flag("debug"),
-        progress: matches.get_flag("progress"),
-        timer: matches.get_flag("timer")
+        debug: arg_matches.get_flag("debug"),
+        progress: arg_matches.get_flag("progress"),
+        timer: arg_matches.get_flag("timer")
     };
 
     //create the reqwest async client
@@ -67,7 +67,7 @@ async fn main() {
     }
 }
 
-fn get_matches() -> ArgMatches {
+fn get_arch_matches() -> ArgMatches {
     command!()
         .arg_required_else_help(true)
         .arg(arg!([url] "Required url to operate on, including the protocol (so http or https)."))
@@ -101,25 +101,22 @@ async fn check_page(base_url: &String, args: &Flags, client: &Client, state: &mu
     // pop a (random) page to be checked, remove it from the pages to be checked
     let page_being_checked = state.to_be_checked_pages.iter().next().unwrap().clone();
     state.to_be_checked_pages.remove(&page_being_checked);
-
     if args.debug { log_start_checking(state.to_be_checked_pages, &page_being_checked); }
 
+    // get all hrefs in the page being checked
     let hrefs = crawl(client, &page_being_checked).await;
     if args.debug { log_new_items(&hrefs, "hrefs") }
 
     // determine the pages we did not yet see
     let new_pages = get_new_pages(base_url, state, &page_being_checked, &hrefs);
-
     if args.debug { log_new_items(&new_pages, "new_pages") }
 
     // determine the links we did not yet see
     let new_links = get_new_links(base_url, state, &page_being_checked, hrefs);
-
     if args.debug { log_new_items(&new_links, "new_links") }
 
-    // concatenate new_pages and new_urls to check them in a batch
+    // concatenate new_pages and new_links to check them in a batch
     let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
-
     if args.debug { log_start_checking_links(state, &page_being_checked); }
 
     for check_result in check_urls(client, &page_being_checked, new_urls, args.debug).await {
@@ -128,10 +125,8 @@ async fn check_page(base_url: &String, args: &Flags, client: &Client, state: &mu
 
     // insert the new_pages into the to_be_checked_pages
     insert_newpages_into_tobecheckedpages(state.to_be_checked_pages, new_pages);
-
     // and insert the new_links into the checked_links
     insert_newlinks_into_checkedlinks(state.checked_links, new_links);
-
     // finally add the page_being_checked to the checked_pages
     state.checked_pages.insert(page_being_checked.clone());
 
