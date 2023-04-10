@@ -62,7 +62,7 @@ async fn main() {
         to_be_checked_pages.remove(&page_being_checked);
 
         if debug {
-            println!("=============== Checking {page_being_checked}, remaining {} ====================", to_be_checked_pages.len());
+            println!("\n=============== start checking {page_being_checked}, remaining {}", to_be_checked_pages.len());
             to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
         }
 
@@ -98,6 +98,11 @@ async fn main() {
         // concatenate new_pages and new_urls to check them in a batch
         let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
 
+        if debug {
+            println!("=============== start checking links found in {page_being_checked}");
+            to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
+        }
+
         for check_result in check_urls(&client, &page_being_checked, new_urls, debug).await {
             check_results.insert(check_result);
         }
@@ -117,8 +122,11 @@ async fn main() {
             });
 
         // finally add the page_being_checked to the checked_pages
-        checked_pages.insert(page_being_checked);
+        checked_pages.insert(page_being_checked.clone());
 
+        if debug {
+            println!("=============== end checking {page_being_checked}");
+        }
         if progress {
             print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", checked_pages.len(), to_be_checked_pages.len(), checked_links.len());
             io::stdout().flush().unwrap();
@@ -157,89 +165,89 @@ async fn main() {
         process::exit(-1);
     }
 
-    // strip a trailing '/' and/or add the base_url or page_being_checked to the url
-    fn format_url(href: &str, base_url: &str, page_being_checked: &str) -> String {
-        let mut tmp_href = href.to_string();
-        let mut tmp_page_being_checked = page_being_checked.to_string();
-        if tmp_href.ends_with('/') { tmp_href.pop(); }
-        if tmp_page_being_checked.ends_with('/') { tmp_page_being_checked.pop(); }
-        if tmp_href.starts_with('/') { format!("{}{}", base_url, tmp_href) } // an absolute local URL
-        else if !tmp_href.contains(':') { format!("{:?}/{}", tmp_page_being_checked, tmp_href) } // a relative URL
-        else { tmp_href }
-    }
-
-    // fetch all href's from the page, so both pages & links
-    async fn crawl(client: &Client, url: &str) -> HashSet<String> {
-        let mut links = HashSet::new();
-        let body = client.get(url).send().await.unwrap().text().await.unwrap();
-        let document = Document::from(body.as_str());
-        for node in document.find(Name("a")) {
-            let link = node.attr("href").unwrap_or("").to_string();
-            links.insert(link);
-        }
-        links
-    }
-
-    // checks Vec<url> (pages or links) for HTTP status code between 200 and 299
-    // returns None if ok, Some(link+error) if not ok
-    async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>, debug: bool) -> HashSet<Option<String>> {
-        let mut check_results = HashSet::new();
-
-        // spawn tasks to concurrently & async check the urls
-        let tasks = urls.into_iter().map(move |url| {
-            fetch_url(client, url)
-        });
-        let responses = futures::future::join_all(tasks).await;
-
-        for response in responses {
-            match response {
-                Ok(res) => {
-                    if res.status() >= StatusCode::from_u16(200).unwrap()
-                        && res.status() < StatusCode::from_u16(300).unwrap() {
-                        if debug { println!("{}: success {:?}", res.url(), res.status()); }
-                        check_results.insert(None);
-                    } else {
-                        if debug { println!("!!!!! ERROR {}: {:?}", res.url(), res.status()); }
-                        check_results.insert(Some(format!("{} on {} gave status {:?}", res.url(), page_being_checked, res.status())));
-                    }
-                }
-                Err(err) => {
-                    if debug { println!("!!!!! ERROR {:?}", err); }
-                    check_results.insert(Some(format!("error {:?}", err)));
-                }
-            }
-        }
-        check_results
-    }
-    // fetches a single url
-    async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {
-        Ok(client
-            .get(url)
-            .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0")
-            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
-            .header("Accept-Language", "nl,en-US;q=0.7,en;q=0.3")
-            .header("Accept-Encoding", "gzip, deflate, br")
-            .header("DNT", "1")
-            .header("Connection", "keep-alive")
-            .header("Upgrade-Insecure-Requests", "1")
-            .header("Sec-Fetch-Dest", "document")
-            .header("Sec-Fetch-Mode", "navigate")
-            .header("Sec-Fetch-Site", "none")
-            .header("Sec-Fetch-User", "?1")
-            .header("Pragma", "no-cache")
-            .header("Cache-Control", "no-cache")
-            .send()
-            .await?)
-    }
+// strip a trailing '/' and/or add the base_url or page_being_checked to the url
+fn format_url(href: &str, base_url: &str, page_being_checked: &str) -> String {
+    let mut tmp_href = href.to_string();
+    let mut tmp_page_being_checked = page_being_checked.to_string();
+    if tmp_href.ends_with('/') { tmp_href.pop(); }
+    if tmp_page_being_checked.ends_with('/') { tmp_page_being_checked.pop(); }
+    if tmp_href.starts_with('/') { format!("{}{}", base_url, tmp_href) } // an absolute local URL
+    else if !tmp_href.contains(':') { format!("{:?}/{}", tmp_page_being_checked, tmp_href) } // a relative URL
+    else { tmp_href }
 }
 
-fn log_new_items(hash_set: &HashSet<String>, item_names: &str) {
+// fetch all href's from the page, so both pages & links
+async fn crawl(client: &Client, url: &str) -> HashSet<String> {
+    let mut links = HashSet::new();
+    let body = client.get(url).send().await.unwrap().text().await.unwrap();
+    let document = Document::from(body.as_str());
+    for node in document.find(Name("a")) {
+        let link = node.attr("href").unwrap_or("").to_string();
+        links.insert(link);
+    }
+    links
+}
+
+// checks Vec<url> (pages or links) for HTTP status code between 200 and 299
+// returns None if ok, Some(link+error) if not ok
+async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>, debug: bool) -> HashSet<Option<String>> {
+    let mut check_results = HashSet::new();
+
+    // spawn tasks to concurrently & async check the urls
+    let tasks = urls.into_iter().map(move |url| {
+        fetch_url(client, url)
+    });
+    let responses = futures::future::join_all(tasks).await;
+
+    for response in responses {
+        match response {
+            Ok(res) => {
+                if res.status() >= StatusCode::from_u16(200).unwrap()
+                    && res.status() < StatusCode::from_u16(300).unwrap() {
+                    if debug { println!("{}: success {:?}", res.url(), res.status()); }
+                    check_results.insert(None);
+                } else {
+                    if debug { println!("!!!!! ERROR {}: {:?}", res.url(), res.status()); }
+                    check_results.insert(Some(format!("{} on {} gave status {:?}", res.url(), page_being_checked, res.status())));
+                }
+            }
+            Err(err) => {
+                if debug { println!("!!!!! ERROR {:?}", err); }
+                check_results.insert(Some(format!("error {:?}", err)));
+            }
+        }
+    }
+    check_results
+}
+
+// fetches a single url
+async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {
+    Ok(client
+        .get(url)
+        .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:108.0) Gecko/20100101 Firefox/108.0")
+        .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+        .header("Accept-Language", "nl,en-US;q=0.7,en;q=0.3")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .header("DNT", "1")
+        .header("Connection", "keep-alive")
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("Sec-Fetch-Dest", "document")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Sec-Fetch-Site", "none")
+        .header("Sec-Fetch-User", "?1")
+        .header("Pragma", "no-cache")
+        .header("Cache-Control", "no-cache")
+        .send()
+        .await?)
+}
+
+fn log_new_items(hash_set: &HashSet<String>, item_name: &str) {
     if !hash_set.is_empty() {
-        println!("=============== new {} ({}); ", item_names, hash_set.len());
+        println!("=============== {} ({}); ", item_name, hash_set.len());
         hash_set.clone().into_iter().for_each(|s| println!("{s},"));
-        println!("=============== end of new {}", item_names);
+        println!("=============== end of {}", item_name);
     } else {
-        println!("=============== no new {}", item_names);
+        println!("=============== no {}", item_name);
     }
 }
 
