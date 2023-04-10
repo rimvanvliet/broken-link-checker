@@ -12,7 +12,6 @@ use select::predicate::Name;
 
 // TODO allow for pages without /
 // TODO improve error handling
-// TODO add the page to the broken link
 
 #[tokio::main]
 async fn main() {
@@ -46,6 +45,7 @@ async fn main() {
         io::stdout().flush().unwrap();
     }
 
+    //create the reqwest async client
     let client = Client::new();
 
     // initialise the progress; a page is an internal link, a link is an external link
@@ -53,8 +53,7 @@ async fn main() {
     let mut checked_links = HashSet::new();
     // the check_result contains the result of an url check; Option<String>: None if ok, the link + error if not ok
     let mut check_results: HashSet<Option<String>> = HashSet::new();
-    // initialise the pages that must still be checked with the root of the website
-    // start with the base_url
+    // initialise the pages that must still be checked with the base_url
     let mut to_be_checked_pages = HashSet::new();
     to_be_checked_pages.insert(base_url.to_string());
 
@@ -69,7 +68,7 @@ async fn main() {
             println!();
         }
 
-        let hrefs = crawl(&client, &page_being_checked.to_string()).await;
+        let hrefs = crawl(&client, &page_being_checked).await;
 
         // determine the pages we did not yet see
         let new_pages = hrefs
@@ -129,24 +128,23 @@ async fn main() {
     }
 
     // print the results
-    println!("\n--> de gevonden interne links zijn ({}): ", checked_pages.len());
-    for int_link in checked_pages {
-        println!("{int_link}");
+    println!("\n--> de gevonden pagina's van de website zijn ({}): ", checked_pages.len());
+    for checked_page in checked_pages {
+        println!("{checked_page}");
     }
     println!("--> de gecheckte externe links zijn ({}): ", checked_links.len());
-    for checked_url in checked_links {
-        println!("{checked_url}");
+    for checked_link in checked_links {
+        println!("{checked_link}");
     }
-    let bad_urls = check_results
+    let bad_results = check_results
         .into_iter()
         .flatten().collect::<Vec<String>>();
-    let nr_bad_urls = bad_urls.len();
-    if nr_bad_urls == 0 {
+    if bad_results.is_empty() {
         println!("--> er zijn GEEN gebroken urls.");
     } else {
-        println!("--> LET OP: ER ZIJN GEBROKEN URLS ({}):", bad_urls.len());
-        for bad_url in bad_urls {
-            println!("{bad_url}");
+        println!("--> LET OP: ER ZIJN GEBROKEN URLS ({}):", bad_results.len());
+        for bad_result in &bad_results {
+            println!("{bad_result}");
         }
     }
 
@@ -155,13 +153,13 @@ async fn main() {
     }
 
     // exit <> 0 if bad_urls exists
-    if nr_bad_urls == 0 {
+    if bad_results.is_empty() {
         process::exit(0);
     } else {
         process::exit(-1);
     }
 
-    // strip a trailing '/' and/or the base_url from the url
+    // strip a trailing '/' and/or add the base_url to the url
     fn format_url(s: &str, prefix: &str) -> String {
         let mut tmp = s.to_string();
         if tmp.ends_with('/') {
@@ -180,8 +178,8 @@ async fn main() {
         let body = client.get(url).send().await.unwrap().text().await.unwrap();
         let document = Document::from(body.as_str());
         for node in document.find(Name("a")) {
-            let link = node.attr("href").unwrap_or("");
-            links.insert(link.to_string());
+            let link = node.attr("href").unwrap_or("").to_string();
+            links.insert(link);
         }
         links
     }
@@ -189,12 +187,13 @@ async fn main() {
     // checks Vec<url> (pages or links) for HTTP status code between 200 and 299
     // returns None if ok, Some(link+error) if not ok
     async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>, debug: bool) -> HashSet<Option<String>> {
-        let mut result = HashSet::new();
+        let mut check_results = HashSet::new();
 
+        // spawn tasks to concurrently & async check the urls
         let tasks = urls.into_iter().map(move |url| {
             fetch_url(client, url)
         });
-        let responses: Vec<Result<Response, Box<dyn std::error::Error>>> = futures::future::join_all(tasks).await;
+        let responses = futures::future::join_all(tasks).await;
 
         for response in responses {
             match response {
@@ -202,19 +201,19 @@ async fn main() {
                     if res.status() >= StatusCode::from_u16(200).unwrap()
                         && res.status() < StatusCode::from_u16(300).unwrap() {
                         if debug { println!("{}: success {:?}", res.url(), res.status()); }
-                        result.insert(None);
+                        check_results.insert(None);
                     } else {
                         if debug { println!("!!!!! ERROR {}: {:?}", res.url(), res.status()); }
-                        result.insert(Some(format!("{} on {} gave status {:?}", res.url(), page_being_checked, res.status())));
+                        check_results.insert(Some(format!("{} on {} gave status {:?}", res.url(), page_being_checked, res.status())));
                     }
                 }
                 Err(err) => {
                     if debug { println!("!!!!! ERROR {:?}", err); }
-                    result.insert(Some(format!("error {:?}", err)));
+                    check_results.insert(Some(format!("error {:?}", err)));
                 }
             }
         }
-        result
+        check_results
     }
     // fetches a single url
     async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {

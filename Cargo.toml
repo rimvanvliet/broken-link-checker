@@ -1,6 +1,7 @@
 [package]
 name = "hc"
 description = "hc, a simple http(s) checker for broken links"
+authors = ["Ruud van Vliet <ruud@vliet.io>"]
 version = "0.1.0"
 edition = "2021"
 
