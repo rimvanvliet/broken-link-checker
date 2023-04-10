@@ -18,11 +18,12 @@ struct Flags {
     timer: bool
 }
 
-struct State {
-    checked_pages: HashSet<Option<String>>,
-    checked_links: HashSet<Option<String>>,
-    check_results: HashSet<Option<String>>,
-    to_be_checked_pages: HashSet<Option<String>>
+struct State<'a> {
+    to_be_checked_pages: &'a mut HashSet<String>,
+    checked_pages: &'a mut HashSet<String>,
+    checked_links: &'a mut HashSet<String>,
+    // the check_result contains the result of an url check; Option<String>: None if ok, the link + error if not ok
+    check_results: &'a mut HashSet<Option<String>>
 }
 
 #[tokio::main]
@@ -43,18 +44,20 @@ async fn main() {
     //create the reqwest async client
     let client = Client::new();
 
-    // initialise the progress; a page is an internal link, a link is an external link
-    let mut checked_pages = HashSet::new();
-    let mut checked_links = HashSet::new();
-    // the check_result contains the result of an url check; Option<String>: None if ok, the link + error if not ok
-    let mut check_results: HashSet<Option<String>> = HashSet::new();
-    // initialise the pages that must still be checked with the base_url
-    let mut to_be_checked_pages = HashSet::new();
-    to_be_checked_pages.insert(base_url.to_string());
+    // initialise the state; a page is an internal link, a link is an external link
+    let mut state = State {
+        to_be_checked_pages: &mut HashSet::new(),
+        checked_pages: &mut HashSet::new(),
+        checked_links: &mut HashSet::new(),
+        check_results: &mut HashSet::new()
+    };
 
-    check_pages(base_url, &flags, &client, &mut checked_pages, &mut checked_links, &mut check_results, &mut to_be_checked_pages).await;
+    // initialise the pages that must still be checked with the base_url
+    state.to_be_checked_pages.insert(base_url.to_string());
+
+    check_pages(base_url, &flags, &client, &mut state).await;
     // print the results
-    let success = summarize_results(start, &flags.timer, &mut checked_pages, &mut checked_links, &mut check_results);
+    let success = summarize_results(start, &flags.timer, state);
 
     // exit <> 0 if bad_urls exists
     if success {
@@ -85,66 +88,67 @@ fn check_base_url(base_url: &String) {
     }
 }
 
-async fn check_pages(base_url: &String, flags: &Flags, client: &Client, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>, to_be_checked_pages: &mut HashSet<String>) {
-    if flags.progress { print_progress(checked_pages, checked_links, to_be_checked_pages); }
+async fn check_pages(base_url: &String, flags: &Flags, client: &Client, state: &mut State<'_>) {
+    if flags.progress { print_progress(state); }
 
-    while !to_be_checked_pages.is_empty() {
-        check_page(base_url, flags, client, checked_pages, checked_links, check_results, to_be_checked_pages).await
+    while !state.to_be_checked_pages.is_empty() {
+        check_page(base_url, flags, client, state).await
     }
 }
 
-async fn check_page(base_url: &String, args: &Flags, client: &Client, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>, to_be_checked_pages: &mut HashSet<String>) {
-    // pop a (random) page to be checked, remove it from the pages to be checked
-    let page_being_checked = to_be_checked_pages.iter().next().unwrap().clone();
-    to_be_checked_pages.remove(&page_being_checked);
+async fn check_page(base_url: &String, args: &Flags, client: &Client, state: &mut State<'_>) {
 
-    if args.debug { log_start_checking(to_be_checked_pages, &page_being_checked); }
+    // pop a (random) page to be checked, remove it from the pages to be checked
+    let page_being_checked = state.to_be_checked_pages.iter().next().unwrap().clone();
+    state.to_be_checked_pages.remove(&page_being_checked);
+
+    if args.debug { log_start_checking(state.to_be_checked_pages, &page_being_checked); }
 
     let hrefs = crawl(client, &page_being_checked).await;
     if args.debug { log_new_items(&hrefs, "hrefs") }
 
     // determine the pages we did not yet see
-    let new_pages = get_new_pages(base_url, checked_pages, to_be_checked_pages, &page_being_checked, &hrefs);
+    let new_pages = get_new_pages(base_url, state, &page_being_checked, &hrefs);
 
     if args.debug { log_new_items(&new_pages, "new_pages") }
 
     // determine the links we did not yet see
-    let new_links = get_new_links(base_url, checked_links, &page_being_checked, hrefs);
+    let new_links = get_new_links(base_url, state, &page_being_checked, hrefs);
 
     if args.debug { log_new_items(&new_links, "new_links") }
 
     // concatenate new_pages and new_urls to check them in a batch
     let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
 
-    if args.debug { log_start_checking_links(to_be_checked_pages, &page_being_checked); }
+    if args.debug { log_start_checking_links(state, &page_being_checked); }
 
     for check_result in check_urls(client, &page_being_checked, new_urls, args.debug).await {
-        check_results.insert(check_result);
+        state.check_results.insert(check_result);
     }
 
     // insert the new_pages into the to_be_checked_pages
-    insert_newpages_into_tobecheckedpages(to_be_checked_pages, new_pages);
+    insert_newpages_into_tobecheckedpages(state.to_be_checked_pages, new_pages);
 
     // and insert the new_links into the checked_links
-    insert_newlinks_into_checkedlinks(checked_links, new_links);
+    insert_newlinks_into_checkedlinks(state.checked_links, new_links);
 
     // finally add the page_being_checked to the checked_pages
-    checked_pages.insert(page_being_checked.clone());
+    state.checked_pages.insert(page_being_checked.clone());
 
     if args.debug { println!("=============== end checking {}", page_being_checked); }
-    if args.progress { print_progress(checked_pages, checked_links, to_be_checked_pages); }
+    if args.progress { print_progress(state); }
 }
 
-fn summarize_results(start: Instant, timer: &bool, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>) -> bool {
-    println!("\n--> de gevonden pagina's van de website zijn ({}): ", checked_pages.len());
-    for checked_page in checked_pages.clone().into_iter() {
+fn summarize_results(start: Instant, timer: &bool, state: State) -> bool {
+    println!("\n--> de gevonden pagina's van de website zijn ({}): ", state.checked_pages.len());
+    for checked_page in state.checked_pages.clone().into_iter() {
         println!("{checked_page}");
     }
-    println!("--> de gecheckte externe links zijn ({}): ", checked_links.len());
-    for checked_link in checked_links.clone().into_iter() {
+    println!("--> de gecheckte externe links zijn ({}): ", state.checked_links.len());
+    for checked_link in state.checked_links.clone().into_iter() {
         println!("{checked_link}");
     }
-    let bad_results = check_results
+    let bad_results = state.check_results
         .clone()
         .into_iter()
         .flatten().collect::<Vec<String>>();
@@ -176,22 +180,22 @@ fn insert_newpages_into_tobecheckedpages(to_be_checked_pages: &mut HashSet<Strin
         });
 }
 
-fn log_start_checking_links(to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String) {
+fn log_start_checking_links(state: &mut State, page_being_checked: &String) {
     println!("=============== start checking links found in {}", page_being_checked);
-    to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
+    state.to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
 }
 
-fn get_new_links(base_url: &String, checked_links: &mut HashSet<String>, page_being_checked: &str, hrefs: HashSet<String>) -> HashSet<String> {
+fn get_new_links(base_url: &String, state: &mut State, page_being_checked: &str, hrefs: HashSet<String>) -> HashSet<String> {
     hrefs
         .into_iter()
         .map(|href| format_url(&href, base_url, page_being_checked))
         .filter(|href| href.starts_with("http")
             && !href.starts_with(base_url)
-            && !checked_links.contains(href))
+            && !state.checked_links.contains(href))
         .collect::<HashSet<String>>()
 }
 
-fn get_new_pages(base_url: &String, checked_pages: &mut HashSet<String>, to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String, hrefs: &HashSet<String>) -> HashSet<String> {
+fn get_new_pages(base_url: &String, state: &mut State, page_being_checked: &String, hrefs: &HashSet<String>) -> HashSet<String> {
     hrefs
         .clone()
         .into_iter()
@@ -199,8 +203,8 @@ fn get_new_pages(base_url: &String, checked_pages: &mut HashSet<String>, to_be_c
         .filter(|href| (href.starts_with(base_url) || !href.contains(':'))
             && href != page_being_checked
             && !href.is_empty()
-            && !checked_pages.contains(href)
-            && !to_be_checked_pages.contains(href))
+            && !state.checked_pages.contains(href)
+            && !state.to_be_checked_pages.contains(href))
         .collect::<HashSet<String>>()
 }
 
@@ -209,8 +213,8 @@ fn log_start_checking(to_be_checked_pages: &mut HashSet<String>, page_being_chec
     to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
 }
 
-fn print_progress(checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, to_be_checked_pages: &mut HashSet<String>) {
-    print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", checked_pages.len(), to_be_checked_pages.len(), checked_links.len());
+fn print_progress(state: &mut State) {
+    print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", state.checked_pages.len(), state.to_be_checked_pages.len(), state.checked_links.len());
     io::stdout().flush().unwrap();
 }
 
