@@ -164,6 +164,7 @@ async fn main() {
     } else {
         process::exit(-1);
     }
+}
 
 // strip a trailing '/' and/or add the base_url or page_being_checked to the url
 fn format_url(href: &str, base_url: &str, page_being_checked: &str) -> String {
