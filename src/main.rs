@@ -4,7 +4,7 @@ use std::io::Write;
 use std::process;
 use std::time::Instant;
 
-use clap::{arg, command};
+use clap::{arg, ArgMatches, command};
 use regex::Regex;
 use reqwest::{Client, Response, StatusCode};
 use select::document::Document;
@@ -12,37 +12,33 @@ use select::predicate::Name;
 
 // TODO improve error handling
 
+struct Flags {
+    debug: bool,
+    progress: bool,
+    timer: bool
+}
+
+struct State {
+    checked_pages: HashSet<Option<String>>,
+    checked_links: HashSet<Option<String>>,
+    check_results: HashSet<Option<String>>,
+    to_be_checked_pages: HashSet<Option<String>>
+}
+
 #[tokio::main]
 async fn main() {
     let start = Instant::now();
 
     // prepare cli arg & flags
-    let matches = command!()
-        .arg_required_else_help(true)
-        .arg(arg!([url] "Required url to operate on, including the protocol (so http or https)."))
-        .arg(arg!(-d --debug "Turn debugging information on.")
-            .required(false))
-        .arg(arg!(-p --progress "Show a progress on-liner.")
-            .required(false))
-        .arg(arg!(-t --timer "Time execution.")
-            .required(false))
-        .get_matches();
-
+    let matches = get_matches();
     let base_url = matches.get_one::<String>("url").unwrap();
-    let regex = Regex::new(r"^https?://[0-9A-Za-z.:]+$").unwrap();
-    if !(regex.is_match(base_url)) {
-        println!("{base_url} is not a valid url.");
-        process::exit(1);
-    }
+    check_base_url(base_url);
 
-    let debug = matches.get_flag("debug");
-    let progress = matches.get_flag("progress");
-    let timer = matches.get_flag("timer");
-
-    if progress {
-        print!("\rInternal pages checked: 0, Pages to go: 1, External links checked: 0                         ");
-        io::stdout().flush().unwrap();
-    }
+    let flags = Flags {
+        debug: matches.get_flag("debug"),
+        progress: matches.get_flag("progress"),
+        timer: matches.get_flag("timer")
+    };
 
     //create the reqwest async client
     let client = Client::new();
@@ -56,93 +52,100 @@ async fn main() {
     let mut to_be_checked_pages = HashSet::new();
     to_be_checked_pages.insert(base_url.to_string());
 
+    check_pages(base_url, &flags, &client, &mut checked_pages, &mut checked_links, &mut check_results, &mut to_be_checked_pages).await;
+    // print the results
+    let success = summarize_results(start, &flags.timer, &mut checked_pages, &mut checked_links, &mut check_results);
+
+    // exit <> 0 if bad_urls exists
+    if success {
+        process::exit(0);
+    } else {
+        process::exit(-1);
+    }
+}
+
+fn get_matches() -> ArgMatches {
+    command!()
+        .arg_required_else_help(true)
+        .arg(arg!([url] "Required url to operate on, including the protocol (so http or https)."))
+        .arg(arg!(-d --debug "Turn debugging information on.")
+            .required(false))
+        .arg(arg!(-p --progress "Show a progress on-liner.")
+            .required(false))
+        .arg(arg!(-t --timer "Time execution.")
+            .required(false))
+        .get_matches()
+}
+
+fn check_base_url(base_url: &String) {
+    let regex = Regex::new(r"^https?://[0-9A-Za-z.:]+$").unwrap();
+    if !(regex.is_match(base_url)) {
+        println!("{base_url} is not a valid url.");
+        process::exit(1);
+    }
+}
+
+async fn check_pages(base_url: &String, flags: &Flags, client: &Client, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>, to_be_checked_pages: &mut HashSet<String>) {
+    if flags.progress { print_progress(checked_pages, checked_links, to_be_checked_pages); }
+
     while !to_be_checked_pages.is_empty() {
-        // pop a (random) page to be checked
-        let page_being_checked = to_be_checked_pages.iter().next().unwrap().clone();
-        to_be_checked_pages.remove(&page_being_checked);
+        check_page(base_url, flags, client, checked_pages, checked_links, check_results, to_be_checked_pages).await
+    }
+}
 
-        if debug {
-            println!("\n=============== start checking {page_being_checked}, remaining {}", to_be_checked_pages.len());
-            to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
-        }
+async fn check_page(base_url: &String, args: &Flags, client: &Client, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>, to_be_checked_pages: &mut HashSet<String>) {
+    // pop a (random) page to be checked, remove it from the pages to be checked
+    let page_being_checked = to_be_checked_pages.iter().next().unwrap().clone();
+    to_be_checked_pages.remove(&page_being_checked);
 
-        let hrefs = crawl(&client, &page_being_checked).await;
-        if debug { log_new_items(&hrefs, "hrefs") }
+    if args.debug { log_start_checking(to_be_checked_pages, &page_being_checked); }
 
-        // determine the pages we did not yet see
-        let new_pages = hrefs
-            .clone()
-            .into_iter()
-            .map(|href| format_url(&href, base_url, &page_being_checked))
-            .filter(|href| (href.starts_with(base_url) || !href.contains(':'))
-                && href != &page_being_checked
-                && !href.is_empty()
-                && !checked_pages.contains(href)
-                && !to_be_checked_pages.contains(href))
-            .collect::<HashSet<String>>();
+    let hrefs = crawl(client, &page_being_checked).await;
+    if args.debug { log_new_items(&hrefs, "hrefs") }
 
-        if debug { log_new_items(&new_pages, "new_pages") }
+    // determine the pages we did not yet see
+    let new_pages = get_new_pages(base_url, checked_pages, to_be_checked_pages, &page_being_checked, &hrefs);
 
-        // determine the links we did not yet see
-        let new_links = hrefs
-            .clone()
-            .into_iter()
-            .map(|href| format_url(&href, base_url, &page_being_checked))
-            .filter(|href| href.starts_with("http")
-                && !href.starts_with(base_url)
-                && !checked_links.contains(href))
-            .collect::<HashSet<String>>();
+    if args.debug { log_new_items(&new_pages, "new_pages") }
 
-        if debug { log_new_items(&new_links, "new_links") }
+    // determine the links we did not yet see
+    let new_links = get_new_links(base_url, checked_links, &page_being_checked, hrefs);
 
-        // concatenate new_pages and new_urls to check them in a batch
-        let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
+    if args.debug { log_new_items(&new_links, "new_links") }
 
-        if debug {
-            println!("=============== start checking links found in {page_being_checked}");
-            to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
-        }
+    // concatenate new_pages and new_urls to check them in a batch
+    let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
 
-        for check_result in check_urls(&client, &page_being_checked, new_urls, debug).await {
-            check_results.insert(check_result);
-        }
+    if args.debug { log_start_checking_links(to_be_checked_pages, &page_being_checked); }
 
-        // insert the new_pages into the to_be_checked_pages
-        new_pages
-            .into_iter()
-            .for_each(|item| {
-                to_be_checked_pages.insert(item);
-            });
-
-        // and insert the new_links into the checked_links
-        new_links
-            .into_iter()
-            .for_each(|item| {
-                checked_links.insert(item);
-            });
-
-        // finally add the page_being_checked to the checked_pages
-        checked_pages.insert(page_being_checked.clone());
-
-        if debug {
-            println!("=============== end checking {page_being_checked}");
-        }
-        if progress {
-            print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", checked_pages.len(), to_be_checked_pages.len(), checked_links.len());
-            io::stdout().flush().unwrap();
-        }
+    for check_result in check_urls(client, &page_being_checked, new_urls, args.debug).await {
+        check_results.insert(check_result);
     }
 
-    // print the results
+    // insert the new_pages into the to_be_checked_pages
+    insert_newpages_into_tobecheckedpages(to_be_checked_pages, new_pages);
+
+    // and insert the new_links into the checked_links
+    insert_newlinks_into_checkedlinks(checked_links, new_links);
+
+    // finally add the page_being_checked to the checked_pages
+    checked_pages.insert(page_being_checked.clone());
+
+    if args.debug { println!("=============== end checking {}", page_being_checked); }
+    if args.progress { print_progress(checked_pages, checked_links, to_be_checked_pages); }
+}
+
+fn summarize_results(start: Instant, timer: &bool, checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, check_results: &mut HashSet<Option<String>>) -> bool {
     println!("\n--> de gevonden pagina's van de website zijn ({}): ", checked_pages.len());
-    for checked_page in checked_pages {
+    for checked_page in checked_pages.clone().into_iter() {
         println!("{checked_page}");
     }
     println!("--> de gecheckte externe links zijn ({}): ", checked_links.len());
-    for checked_link in checked_links {
+    for checked_link in checked_links.clone().into_iter() {
         println!("{checked_link}");
     }
     let bad_results = check_results
+        .clone()
         .into_iter()
         .flatten().collect::<Vec<String>>();
     if bad_results.is_empty() {
@@ -153,17 +156,62 @@ async fn main() {
             println!("{bad_result}");
         }
     }
+    if *timer { println!("Timer: {} seconden.", start.elapsed().as_secs()); }
+    bad_results.is_empty()
+}
 
-    if timer {
-        println!("Timer: {} seconden.", start.elapsed().as_secs());
-    }
+fn insert_newlinks_into_checkedlinks(checked_links: &mut HashSet<String>, new_links: HashSet<String>) {
+    new_links
+        .into_iter()
+        .for_each(|item| {
+            checked_links.insert(item);
+        });
+}
 
-    // exit <> 0 if bad_urls exists
-    if bad_results.is_empty() {
-        process::exit(0);
-    } else {
-        process::exit(-1);
-    }
+fn insert_newpages_into_tobecheckedpages(to_be_checked_pages: &mut HashSet<String>, new_pages: HashSet<String>) {
+    new_pages
+        .into_iter()
+        .for_each(|item| {
+            to_be_checked_pages.insert(item);
+        });
+}
+
+fn log_start_checking_links(to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String) {
+    println!("=============== start checking links found in {}", page_being_checked);
+    to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
+}
+
+fn get_new_links(base_url: &String, checked_links: &mut HashSet<String>, page_being_checked: &str, hrefs: HashSet<String>) -> HashSet<String> {
+    hrefs
+        .into_iter()
+        .map(|href| format_url(&href, base_url, page_being_checked))
+        .filter(|href| href.starts_with("http")
+            && !href.starts_with(base_url)
+            && !checked_links.contains(href))
+        .collect::<HashSet<String>>()
+}
+
+fn get_new_pages(base_url: &String, checked_pages: &mut HashSet<String>, to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String, hrefs: &HashSet<String>) -> HashSet<String> {
+    hrefs
+        .clone()
+        .into_iter()
+        .map(|href| format_url(&href, base_url, page_being_checked))
+        .filter(|href| (href.starts_with(base_url) || !href.contains(':'))
+            && href != page_being_checked
+            && !href.is_empty()
+            && !checked_pages.contains(href)
+            && !to_be_checked_pages.contains(href))
+        .collect::<HashSet<String>>()
+}
+
+fn log_start_checking(to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String) {
+    println!("\n=============== start checking {}, remaining {}", page_being_checked, to_be_checked_pages.len());
+    to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
+}
+
+fn print_progress(checked_pages: &mut HashSet<String>, checked_links: &mut HashSet<String>, to_be_checked_pages: &mut HashSet<String>) {
+    print!("\rInternal pages checked: {}, Pages to go: {}, External links checked: {}                         ", checked_pages.len(), to_be_checked_pages.len(), checked_links.len());
+    io::stdout().flush().unwrap();
 }
 
 // strip a trailing '/' and/or add the base_url or page_being_checked to the url
