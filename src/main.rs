@@ -10,7 +10,6 @@ use reqwest::{Client, Response, StatusCode};
 use select::document::Document;
 use select::predicate::Name;
 
-// TODO allow for pages without /
 // TODO improve error handling
 
 #[tokio::main]
@@ -64,38 +63,37 @@ async fn main() {
 
         if debug {
             println!("=============== Checking {page_being_checked}, remaining {} ====================", to_be_checked_pages.len());
-            to_be_checked_pages.clone().into_iter().for_each(|s| print!("{s}, "));
-            println!();
+            to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
         }
 
         let hrefs = crawl(&client, &page_being_checked).await;
+        if debug { log_new_items(&hrefs, "hrefs") }
 
         // determine the pages we did not yet see
         let new_pages = hrefs
             .clone()
             .into_iter()
-            .map(|href| format_url(&href, base_url))
-            .filter(|href| (href.starts_with('/') || href.starts_with(base_url))
+            .map(|href| format_url(&href, base_url, &page_being_checked))
+            .filter(|href| (href.starts_with(base_url) || !href.contains(':'))
                 && href != &page_being_checked
+                && !href.is_empty()
                 && !checked_pages.contains(href)
                 && !to_be_checked_pages.contains(href))
             .collect::<HashSet<String>>();
 
-        if debug {
-            println!("new pages ({}); ", new_pages.len());
-            new_pages.clone().into_iter().for_each(|s| print!("{s}, "));
-            println!();
-        }
+        if debug { log_new_items(&new_pages, "new_pages") }
 
         // determine the links we did not yet see
         let new_links = hrefs
             .clone()
             .into_iter()
-            .map(|href| format_url(&href, base_url))
+            .map(|href| format_url(&href, base_url, &page_being_checked))
             .filter(|href| href.starts_with("http")
                 && !href.starts_with(base_url)
                 && !checked_links.contains(href))
             .collect::<HashSet<String>>();
+
+        if debug { log_new_items(&new_links, "new_links") }
 
         // concatenate new_pages and new_urls to check them in a batch
         let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
@@ -159,17 +157,15 @@ async fn main() {
         process::exit(-1);
     }
 
-    // strip a trailing '/' and/or add the base_url to the url
-    fn format_url(s: &str, prefix: &str) -> String {
-        let mut tmp = s.to_string();
-        if tmp.ends_with('/') {
-            tmp.pop();
-        }
-        if tmp.starts_with('/') {
-            format!("{}{}", prefix, tmp)
-        } else {
-            tmp
-        }
+    // strip a trailing '/' and/or add the base_url or page_being_checked to the url
+    fn format_url(href: &str, base_url: &str, page_being_checked: &str) -> String {
+        let mut tmp_href = href.to_string();
+        let mut tmp_page_being_checked = page_being_checked.to_string();
+        if tmp_href.ends_with('/') { tmp_href.pop(); }
+        if tmp_page_being_checked.ends_with('/') { tmp_page_being_checked.pop(); }
+        if tmp_href.starts_with('/') { format!("{}{}", base_url, tmp_href) } // an absolute local URL
+        else if !tmp_href.contains(':') { format!("{:?}/{}", tmp_page_being_checked, tmp_href) } // a relative URL
+        else { tmp_href }
     }
 
     // fetch all href's from the page, so both pages & links
@@ -234,6 +230,16 @@ async fn main() {
             .header("Cache-Control", "no-cache")
             .send()
             .await?)
+    }
+}
+
+fn log_new_items(hash_set: &HashSet<String>, item_names: &str) {
+    if !hash_set.is_empty() {
+        println!("=============== new {} ({}); ", item_names, hash_set.len());
+        hash_set.clone().into_iter().for_each(|s| println!("{s},"));
+        println!("=============== end of new {}", item_names);
+    } else {
+        println!("=============== no new {}", item_names);
     }
 }
 
