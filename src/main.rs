@@ -1,7 +1,6 @@
 mod matches;
 
-use crate::matches::matches::Flags as Flags;
-use crate::matches::matches::get_arch_matches as get_arch_matches;
+use matches::{Flags, get_arch_matches};
 
 use std::collections::HashSet;
 use std::io;
@@ -12,6 +11,7 @@ use std::time::Instant;
 use reqwest::{Client, Response, StatusCode};
 use select::document::Document;
 use select::predicate::Name;
+use url::{Url};
 
 // TODO improve error handling
 
@@ -20,7 +20,7 @@ struct State<'a> {
     checked_pages: &'a mut HashSet<String>,
     checked_links: &'a mut HashSet<String>,
     // the check_result contains the result of an url check; Option<String>: None if ok, the link + error if not ok
-    check_results: &'a mut HashSet<Option<String>>
+    check_results: &'a mut HashSet<Option<String>>,
 }
 
 #[tokio::main]
@@ -34,7 +34,7 @@ async fn main() {
         to_be_checked_pages: &mut HashSet::new(),
         checked_pages: &mut HashSet::new(),
         checked_links: &mut HashSet::new(),
-        check_results: &mut HashSet::new()
+        check_results: &mut HashSet::new(),
     };
 
     //create the reqwest async client
@@ -68,7 +68,7 @@ async fn check_page(base_url: &String, args: &Flags, client: &Client, state: &mu
     // pop a (random) page to be checked, remove it from the pages to be checked
     let page_being_checked = state.to_be_checked_pages.iter().next().unwrap().clone();
     state.to_be_checked_pages.remove(&page_being_checked);
-    if args.debug { log_start_checking(state.to_be_checked_pages, &page_being_checked); }
+    if args.debug { println!("\n=============== start checking {}, remaining {}", page_being_checked, state.to_be_checked_pages.len()); }
 
     // get all hrefs in the page being checked
     let hrefs = crawl(client, &page_being_checked).await;
@@ -84,7 +84,7 @@ async fn check_page(base_url: &String, args: &Flags, client: &Client, state: &mu
 
     // concatenate new_pages and new_links to check them in a batch
     let new_urls = [&Vec::from_iter(new_pages.clone())[..], &Vec::from_iter(new_links.clone())[..]].concat();
-    if args.debug { log_start_checking_links(state, &page_being_checked); }
+    if args.debug { println!("=============== start checking links found in {}", page_being_checked); }
 
     for check_result in check_urls(client, &page_being_checked, new_urls, args.debug).await {
         state.check_results.insert(check_result);
@@ -167,11 +167,12 @@ async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std
 }
 
 fn get_new_pages(base_url: &String, state: &mut State, page_being_checked: &String, hrefs: &HashSet<String>) -> HashSet<String> {
+    let bare_base_url = format_url("/", base_url);
     hrefs
         .clone()
         .into_iter()
-        .map(|href| format_url(&href, base_url, page_being_checked))
-        .filter(|href| (href.starts_with(base_url) || !href.contains(':'))
+        .map(|href| format_url(&href, page_being_checked))
+        .filter(|href| (href.starts_with(&bare_base_url) || !href.contains(':'))
             && href != page_being_checked
             && !href.is_empty()
             && !state.checked_pages.contains(href)
@@ -180,11 +181,12 @@ fn get_new_pages(base_url: &String, state: &mut State, page_being_checked: &Stri
 }
 
 fn get_new_links(base_url: &String, state: &mut State, page_being_checked: &str, hrefs: HashSet<String>) -> HashSet<String> {
+    let bare_base_url = format_url("/", base_url);
     hrefs
         .into_iter()
-        .map(|href| format_url(&href, base_url, page_being_checked))
+        .map(|href| format_url(&href, page_being_checked))
         .filter(|href| href.starts_with("http")
-            && !href.starts_with(base_url)
+            && !href.starts_with(&bare_base_url)
             && !state.checked_links.contains(href))
         .collect::<HashSet<String>>()
 }
@@ -205,16 +207,6 @@ fn insert_newlinks_into_checkedlinks(checked_links: &mut HashSet<String>, new_li
         });
 }
 
-fn log_start_checking_links(state: &mut State, page_being_checked: &String) {
-    println!("=============== start checking links found in {}", page_being_checked);
-    state.to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
-}
-
-fn log_start_checking(to_be_checked_pages: &mut HashSet<String>, page_being_checked: &String) {
-    println!("\n=============== start checking {}, remaining {}", page_being_checked, to_be_checked_pages.len());
-    to_be_checked_pages.clone().into_iter().for_each(|s| println!("{s}, "));
-}
-
 fn log_new_items(hash_set: &HashSet<String>, item_name: &str) {
     if !hash_set.is_empty() {
         println!("=============== {} ({}); ", item_name, hash_set.len());
@@ -230,15 +222,20 @@ fn print_progress(state: &mut State) {
     io::stdout().flush().unwrap();
 }
 
-// strip a trailing '/' and/or add the base_url or page_being_checked to the url
-fn format_url(href: &str, base_url: &str, page_being_checked: &str) -> String {
-    let mut tmp_href = href.to_string();
-    let mut tmp_page_being_checked = page_being_checked.to_string();
-    if tmp_href.ends_with('/') { tmp_href.pop(); }
-    if tmp_page_being_checked.ends_with('/') { tmp_page_being_checked.pop(); }
-    if tmp_href.starts_with('/') { format!("{}{}", base_url, tmp_href) } // an absolute local URL
-    else if !tmp_href.contains(':') { format!("{:?}/{}", tmp_page_being_checked, tmp_href) } // a relative URL
-    else { tmp_href }
+fn format_url(href: &str,  page_being_checked: &str) -> String {
+    let new_base_url = Url::parse(page_being_checked);
+    let combined_url = new_base_url.expect("dat ging fout").join(href);
+
+    match combined_url {
+        Ok(url) => strip_trailing_slash(url),
+        Err(e) => e.to_string()
+    }
+}
+
+fn strip_trailing_slash(url: Url) -> String {
+    let mut url_as_string = url.to_string();
+    if url_as_string.ends_with('/') { url_as_string.pop(); }
+    url_as_string
 }
 
 fn summarize_results(start: Instant, timer: &bool, state: State) -> bool {
@@ -265,4 +262,3 @@ fn summarize_results(start: Instant, timer: &bool, state: State) -> bool {
     if *timer { println!("Timer: {} seconden.", start.elapsed().as_secs()); }
     bad_results.is_empty()
 }
-
