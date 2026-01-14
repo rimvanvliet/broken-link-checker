@@ -37,7 +37,7 @@ pub fn get_arch_matches() -> (String, Flags) {
 }
 
 fn check_base_url(base_url: &String) {
-    let regex = Regex::new(r"^https?://[0-9A-Za-z.:/]+$").unwrap();
+    let regex = Regex::new(r"^https?://[0-9A-Za-z.:\-/]+$").unwrap();
     if !(regex.is_match(base_url)) {
         println!("{base_url} is not a valid url.");
         process::exit(1);
