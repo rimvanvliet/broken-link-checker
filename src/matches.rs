@@ -4,6 +4,7 @@ use regex::Regex;
 
 pub struct Flags {
     pub debug: bool,
+    pub fetched_urls: bool,
     pub progress: bool,
     pub timer: bool,
 }
@@ -13,6 +14,8 @@ pub fn get_arch_matches() -> (String, Flags) {
         .arg_required_else_help(true)
         .arg(arg!([url] "Required url to operate on, including the protocol (so http or https)."))
         .arg(arg!(-d --debug "Turn debugging information on.")
+            .required(false))
+        .arg(arg!(-u --fetched_urls "Show fetched urls.")
             .required(false))
         .arg(arg!(-p --progress "Show a progress on-liner.")
             .required(false))
@@ -25,6 +28,7 @@ pub fn get_arch_matches() -> (String, Flags) {
 
     let flags = Flags {
         debug: arg_matches.get_flag("debug"),
+        fetched_urls: arg_matches.get_flag("fetched_urls"),
         progress: arg_matches.get_flag("progress"),
         timer: arg_matches.get_flag("timer"),
     };
