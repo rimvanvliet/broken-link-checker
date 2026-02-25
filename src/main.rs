@@ -54,8 +54,13 @@ async fn main() {
         check_results: &mut HashSet::new(),
     };
 
-    //create the reqwest async client
-    let client = Client::new();
+    // create the reqwest async client with sensible timeouts
+    let client = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        // default overall request timeout (can be overridden per-request)
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .expect("failed to build reqwest client");
 
     // initialise the pages that must still be checked with the base_url
     state.to_be_checked_pages.insert(base_url.to_string());
@@ -177,13 +182,20 @@ async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>
 
 // fetches a single url with retry logic
 async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {
-    let max_retries = 3;
+    let max_retries = 5;
     let mut retry_count = 0;
-    
+
+    // allow a longer timeout for hosts that are known to be slow/unreliable
+    let per_request_timeout = if url.contains("stichtingmtbsalland.nl") {
+        std::time::Duration::from_secs(120)
+    } else {
+        std::time::Duration::from_secs(30)
+    };
+
     loop {
         let result = client
             .get(&url)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(per_request_timeout)
             .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36")
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
             .header("Accept-Language", "nl-NL,nl;q=0.9,en;q=0.8")
@@ -208,11 +220,11 @@ async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std
                 if retry_count >= max_retries {
                     return Err(Box::new(err));
                 }
-                
+
                 log::warn!("Request failed for {}, attempt {}/{}. Error: {}", url, retry_count, max_retries, err);
-                
-                // Exponential backoff with some jitter
-                let delay_ms = (1000 * (2_u64.pow(retry_count as u32 - 1))) + (rand::random::<u64>() % 1000);
+
+                // Exponential backoff with some jitter (increase base delay)
+                let delay_ms = (2000 * (2_u64.pow(retry_count as u32 - 1))) + (rand::random::<u64>() % 2000);
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             }
         }
