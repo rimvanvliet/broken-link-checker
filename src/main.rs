@@ -154,7 +154,7 @@ async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>
             // Add small delay between requests to be more respectful
             tokio::time::sleep(std::time::Duration::from_millis(200 + (rand::random::<u64>() % 300))).await;
             
-            fetch_url(&client, url).await
+            fetch_url(&client, page_being_checked, url).await
         }
     });
     let responses = futures::future::join_all(tasks).await;
@@ -167,13 +167,35 @@ async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>
                     if debug { println!("{}: success {:?}", res.url(), res.status()); }
                     check_results.insert(None);
                 } else {
-                    if debug { println!("!!!!! ERROR {}: {:?}", res.url(), res.status()); }
-                    check_results.insert(Some(format!("{} on {} gave status {:?}", res.url(), page_being_checked, res.status())));
+                    if debug { println!("!!!!! ERROR {} on {}: {:?}", res.url(), page_being_checked, res.status()); }
+                    log::error!(
+                        "Broken link found. page={}, link={}, status={}",
+                        page_being_checked,
+                        res.url(),
+                        res.status()
+                    );
+                    check_results.insert(Some(format!(
+                        "broken link {} found on page {} (status {:?})",
+                        res.url(),
+                        page_being_checked,
+                        res.status()
+                    )));
                 }
             }
             Err(err) => {
                 if debug { println!("!!!!! ERROR {:?}", err); }
-                check_results.insert(Some(format!("error {:?}", err)));
+                log::error!(
+                    "Broken link check failed. page={}, link={}, error={}",
+                    page_being_checked,
+                    err.url().map(|u| u.as_str()).unwrap_or("unknown"),
+                    err
+                );
+                check_results.insert(Some(format!(
+                    "broken link check failed for {} found on page {} ({:?})",
+                    err.url().map(|u| u.as_str()).unwrap_or("unknown"),
+                    page_being_checked,
+                    err
+                )));
             }
         }
     }
@@ -181,7 +203,7 @@ async fn check_urls(client: &Client, page_being_checked: &str, urls: Vec<String>
 }
 
 // fetches a single url with retry logic
-async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std::error::Error>> {
+async fn fetch_url(client: &Client, page_being_checked: &str, url: String) -> Result<Response, reqwest::Error> {
     let max_retries = 5;
     let mut retry_count = 0;
 
@@ -218,10 +240,17 @@ async fn fetch_url(client: &Client, url: String) -> Result<Response, Box<dyn std
             Err(err) => {
                 retry_count += 1;
                 if retry_count >= max_retries {
-                    return Err(Box::new(err));
+                    return Err(err);
                 }
 
-                log::warn!("Request failed for {}, attempt {}/{}. Error: {}", url, retry_count, max_retries, err);
+                log::warn!(
+                    "Request failed for {} found on page {}, attempt {}/{}. Error: {}",
+                    url,
+                    page_being_checked,
+                    retry_count,
+                    max_retries,
+                    err
+                );
 
                 // Exponential backoff with some jitter (increase base delay)
                 let delay_ms = (2000 * (2_u64.pow(retry_count as u32 - 1))) + (rand::random::<u64>() % 2000);
