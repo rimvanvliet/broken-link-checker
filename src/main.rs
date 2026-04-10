@@ -134,7 +134,23 @@ async fn check_page(base_url: &str, args: &Flags, client: &Client, state: &mut S
 // fetch all href's from the page, so both pages & links
 async fn crawl(client: &Client, url: &str) -> Result<HashSet<String>, String> {
     let mut links = HashSet::new();
-    let response = client.get(url).send().await.unwrap();
+    let max_retries = 5;
+    let mut retry_count = 0;
+    let response = loop {
+        let result = client.get(url).send().await;
+        match result {
+            Ok(response) => break response,
+            Err(err) => {
+                retry_count += 1;
+                if retry_count >= max_retries {
+                    return Err(format!("page {} failed after {} attempts: {}", url, max_retries, err));
+                }
+                log::warn!("Crawl failed for {}, attempt {}/{}. Error: {}", url, retry_count, max_retries, err);
+                let delay_ms = (2000 * (2_u64.pow(retry_count as u32 - 1))) + (rand::random::<u64>() % 2000);
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+        }
+    };
     let status = response.status();
     if status < StatusCode::from_u16(200).unwrap() || status >= StatusCode::from_u16(300).unwrap() {
         return Err(format!("page {} returned status {}", url, status));
