@@ -93,7 +93,15 @@ async fn check_page(base_url: &str, args: &Flags, client: &Client, state: &mut S
     if args.debug { println!("\n=============== start checking {}, remaining {}", page_being_checked, state.to_be_checked_pages.len()); }
 
     // get all hrefs in the page being checked
-    let hrefs = crawl(client, &page_being_checked).await;
+    let hrefs = match crawl(client, &page_being_checked).await {
+        Ok(hrefs) => hrefs,
+        Err(err) => {
+            log::error!("{}", err);
+            state.check_results.insert(Some(err));
+            state.checked_pages.insert(page_being_checked.clone());
+            return;
+        }
+    };
     if args.debug { log_new_items(&hrefs, "hrefs") }
 
     // determine the pages we did not yet see
@@ -124,15 +132,20 @@ async fn check_page(base_url: &str, args: &Flags, client: &Client, state: &mut S
 }
 
 // fetch all href's from the page, so both pages & links
-async fn crawl(client: &Client, url: &str) -> HashSet<String> {
+async fn crawl(client: &Client, url: &str) -> Result<HashSet<String>, String> {
     let mut links = HashSet::new();
-    let body = client.get(url).send().await.unwrap().text().await.unwrap();
+    let response = client.get(url).send().await.unwrap();
+    let status = response.status();
+    if status < StatusCode::from_u16(200).unwrap() || status >= StatusCode::from_u16(300).unwrap() {
+        return Err(format!("page {} returned status {}", url, status));
+    }
+    let body = response.text().await.unwrap();
     let document = Document::from(body.as_str());
     for node in document.find(Name("a")) {
         let link = node.attr("href").unwrap_or("").to_string();
         links.insert(link);
     }
-    links
+    Ok(links)
 }
 
 // checks Vec<url> (pages or links) for HTTP status code between 200 and 299
