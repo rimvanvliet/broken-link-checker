@@ -237,11 +237,7 @@ async fn fetch_url(client: &Client, page_being_checked: &str, url: String) -> Re
     let mut retry_count = 0;
 
     // allow a longer timeout for hosts that are known to be slow/unreliable
-    let per_request_timeout = if url.contains("stichtingmtbsalland.nl") {
-        std::time::Duration::from_secs(120)
-    } else {
-        std::time::Duration::from_secs(30)
-    };
+    let per_request_timeout = std::time::Duration::from_secs(120);
 
     loop {
         let result = client
